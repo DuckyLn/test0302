@@ -1,12 +1,1517 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anime Japanese Street — Three.js</title>
+<meta name="description" content="Explorable 3D Japanese suburban street with anime cel-shading, cherry blossoms, and a passing train.">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#1a1520}
+  canvas{display:block}
+  #overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at center,rgba(30,20,35,.55),rgba(15,10,18,.92));z-index:10;
+    transition:opacity .8s ease;cursor:pointer;font-family:'Noto Sans JP','Segoe UI',sans-serif}
+  #overlay.hidden{opacity:0;pointer-events:none}
+  #overlay h1{font-size:2.6rem;font-weight:300;color:#f5e6d0;letter-spacing:.35em;margin-bottom:.6rem;
+    text-shadow:0 0 40px rgba(255,183,197,.35)}
+  #overlay h2{font-size:1rem;font-weight:300;color:#c8b8a8;letter-spacing:.5em;margin-bottom:2.5rem;text-transform:uppercase}
+  #overlay .start{padding:.8rem 3rem;border:1px solid rgba(255,200,180,.35);border-radius:40px;color:#f5dcc8;
+    font-size:.95rem;letter-spacing:.25em;background:rgba(255,200,180,.08);backdrop-filter:blur(6px);
+    transition:all .4s ease;cursor:pointer}
+  #overlay .start:hover{background:rgba(255,200,180,.18);border-color:rgba(255,200,180,.6);
+    box-shadow:0 0 30px rgba(255,183,197,.2);transform:scale(1.04)}
+  #crosshair{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:5;pointer-events:none;opacity:0;transition:opacity .5s}
+  #crosshair.show{opacity:.6}
+  #crosshair::before,#crosshair::after{content:'';position:absolute;background:#f5e6d0;border-radius:1px}
+  #crosshair::before{width:18px;height:2px;top:-1px;left:-9px}
+  #crosshair::after{width:2px;height:18px;left:-1px;top:-9px}
+  #hints{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;
+    font-family:'Segoe UI',sans-serif;font-size:.78rem;color:rgba(245,230,210,.5);letter-spacing:.15em;
+    opacity:0;transition:opacity .8s}
+  #hints.show{opacity:1}
+</style>
 </head>
 <body>
-   <h1>第一個網頁</h1>
+
+<div id="overlay">
+  <h1>桜通り</h1>
+  <h2>Sakura Street</h2>
+  <div class="start">Click to Explore</div>
+</div>
+<div id="crosshair"></div>
+<div id="hints">WASD — Move &nbsp;&nbsp; Mouse — Look &nbsp;&nbsp; ESC — Pause</div>
+
+<script type="importmap">
+{
+  "imports":{
+    "three":"https://unpkg.com/three@0.163.0/build/three.module.js",
+    "three/addons/":"https://unpkg.com/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+/* ─────────── CONSTANTS & GLOBALS ─────────── */
+const COLORS = {
+  sky_top:     0x7BA5CC,
+  sky_bottom:  0xF5C8A0,
+  sun:         0xFFF5E0,
+  fog:         0xD4DFE8,
+  asphalt:     0x4A4A52,
+  sidewalk:    0xC5BDA8,
+  curb:        0x9A9488,
+  rail:        0x8A8A8A,
+  tie:         0x6B5B4B,
+  gravel:      0x8A8070,
+  wall1:       0xE8DCC8,
+  wall2:       0xD4C5B0,
+  wall3:       0xC8CDD2,
+  wall4:       0xDDD5C5,
+  roof1:       0x5B4233,
+  roof2:       0x465058,
+  roof3:       0x8B4444,
+  roof4:       0x6A5545,
+  window:      0x334455,
+  windowLit:   0xCCBB77,
+  shopAwning:  0xCC3333,
+  vendRed:     0xDD3333,
+  vendBlue:    0x3355AA,
+  vendGlow:    0xFFFFEE,
+  sakura:      0xFFB7C5,
+  sakuraDark:  0xE89AAA,
+  trunk:       0x5C4033,
+  leaf:        0x558855,
+  grass:       0x6B8E5A,
+  pole:        0x7A7A78,
+  wire:        0x333333,
+  barrier:     0xFFCC00,
+  barrierDark: 0x222222,
+  trainBody:   0x3D8B5A,
+  trainStripe: 0x80CC90,
+  trainWindow: 0x6699AA,
+  sign:        0x2255AA,
+  pot:         0xBB6644,
+  plant:       0x4A8C4A,
+  mailbox:     0xCC2222,
+  fence:       0xA09888,
+  outline:     0x1E1420,
+};
+
+let scene, camera, renderer, controls, clock;
+let composer, sceneTarget, postScene, postCamera, postQuad;
+let gradientMap3, gradientMap5;
+let train, trainState;
+let leftBarrier, rightBarrier;
+let petalMesh, petalData;
+let crossingLightL, crossingLightR;
+const moveState = { f:false, b:false, l:false, r:false };
+const playerVel = new THREE.Vector3();
+
+/* ─────────── INIT ─────────── */
+function init() {
+  clock = new THREE.Clock();
+
+  /* Scene */
+  scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(COLORS.fog, 25, 75);
+
+  /* Camera */
+  camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera.position.set(1.5, 1.65, -16);
+  camera.lookAt(0, 1.5, 10);
+
+  /* Renderer */
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  /* Gradient maps for cel-shading */
+  gradientMap3 = makeGradientMap([80, 160, 255]);
+  gradientMap5 = makeGradientMap([50, 100, 160, 210, 255]);
+
+  /* Lighting */
+  setupLighting();
+
+  /* Sky */
+  createSky();
+
+  /* Post-processing */
+  setupPostProcessing();
+
+  /* Build scene */
+  createGround();
+  createStreet();
+  createRailway();
+  createCrossing();
+  createBuildings();
+  createShop();
+  createVendingMachines();
+  createCherryBlossomTrees();
+  createPetalSystem();
+  createUtilityPoles();
+  createWires();
+  createTrain();
+  createProps();
+
+  /* Controls */
+  setupControls();
+
+  /* Events */
+  window.addEventListener('resize', onResize);
+  document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+
+  animate();
+}
+
+/* ─────────── MATERIALS ─────────── */
+function makeGradientMap(values) {
+  const c = document.createElement('canvas');
+  c.width = values.length; c.height = 1;
+  const ctx = c.getContext('2d');
+  values.forEach((v, i) => {
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.fillRect(i, 0, 1, 1);
+  });
+  const t = new THREE.CanvasTexture(c);
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  return t;
+}
+
+function toon(color, opts = {}) {
+  return new THREE.MeshToonMaterial({
+    color: new THREE.Color(color),
+    gradientMap: opts.fine ? gradientMap5 : gradientMap3,
+    side: opts.side || THREE.FrontSide,
+    transparent: opts.transparent || false,
+    opacity: opts.opacity !== undefined ? opts.opacity : 1,
+    emissive: opts.emissive ? new THREE.Color(opts.emissive) : undefined,
+    emissiveIntensity: opts.emissiveIntensity || 0,
+  });
+}
+
+function flat(color, opts = {}) {
+  return new THREE.MeshBasicMaterial({
+    color: new THREE.Color(color),
+    side: opts.side || THREE.FrontSide,
+    transparent: opts.transparent || false,
+    opacity: opts.opacity !== undefined ? opts.opacity : 1,
+  });
+}
+
+/* ─────────── LIGHTING ─────────── */
+function setupLighting() {
+  /* Warm sunlight */
+  const sun = new THREE.DirectionalLight(0xFFF5E0, 1.4);
+  sun.position.set(12, 25, 8);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -30; sun.shadow.camera.right = 30;
+  sun.shadow.camera.top = 30; sun.shadow.camera.bottom = -30;
+  sun.shadow.camera.near = 1; sun.shadow.camera.far = 80;
+  sun.shadow.bias = -0.001;
+  scene.add(sun);
+
+  /* Cool ambient */
+  scene.add(new THREE.AmbientLight(0x8B7FAA, 0.35));
+
+  /* Hemisphere: sky above, ground below */
+  scene.add(new THREE.HemisphereLight(0x87CEEB, 0x6B5B4B, 0.45));
+
+  /* Fill light from below-right (bounce light) */
+  const fill = new THREE.DirectionalLight(0xE8D0C0, 0.25);
+  fill.position.set(-5, 2, -3);
+  scene.add(fill);
+}
+
+/* ─────────── SKY ─────────── */
+function createSky() {
+  const skyGeo = new THREE.SphereGeometry(120, 32, 24);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      topColor:    { value: new THREE.Color(COLORS.sky_top) },
+      bottomColor: { value: new THREE.Color(COLORS.sky_bottom) },
+      sunDir:      { value: new THREE.Vector3(0.4, 0.7, 0.3).normalize() },
+      sunColor:    { value: new THREE.Color(0xFFE8C0) },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main(){
+        vec4 wp = modelMatrix * vec4(position,1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor, bottomColor, sunColor, sunDir;
+      varying vec3 vWorldPos;
+      void main(){
+        vec3 d = normalize(vWorldPos);
+        float h = max(d.y, 0.0);
+        vec3 sky = mix(bottomColor, topColor, pow(h, 0.45));
+        /* sun glow */
+        float sd = max(dot(d, sunDir), 0.0);
+        sky += sunColor * pow(sd, 48.0) * 0.6;
+        sky += sunColor * pow(sd, 6.0) * 0.12;
+        /* soft clouds hint */
+        float cloud = smoothstep(0.3, 0.6, h) * smoothstep(0.8, 0.5, h);
+        cloud *= (sin(d.x*8.0+d.z*6.0)*0.5+0.5) * 0.08;
+        sky += vec3(cloud);
+        gl_FragColor = vec4(sky, 1.0);
+      }
+    `,
+  });
+  scene.add(new THREE.Mesh(skyGeo, skyMat));
+}
+
+/* ─────────── POST-PROCESSING ─────────── */
+function setupPostProcessing() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const depthTex = new THREE.DepthTexture(w, h);
+  depthTex.format = THREE.DepthFormat;
+  depthTex.type = THREE.UnsignedIntType;
+
+  sceneTarget = new THREE.WebGLRenderTarget(w, h, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthTexture: depthTex,
+  });
+
+  postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  postScene  = new THREE.Scene();
+
+  const postMat = new THREE.ShaderMaterial({
+    uniforms: {
+      tDiffuse:    { value: sceneTarget.texture },
+      tDepth:      { value: sceneTarget.depthTexture },
+      resolution:  { value: new THREE.Vector2(w, h) },
+      cameraNear:  { value: camera.near },
+      cameraFar:   { value: camera.far },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }
+    `,
+    fragmentShader: `
+      #include <packing>
+      uniform sampler2D tDiffuse, tDepth;
+      uniform vec2 resolution;
+      uniform float cameraNear, cameraFar;
+      varying vec2 vUv;
+
+      float readDepth(vec2 c){
+        float z = texture2D(tDepth, c).x;
+        float vz = perspectiveDepthToViewZ(z, cameraNear, cameraFar);
+        return viewZToOrthographicDepth(vz, cameraNear, cameraFar);
+      }
+
+      void main(){
+        vec2 tx = vec2(1.4) / resolution;
+
+        float d  = readDepth(vUv);
+        float dL = readDepth(vUv + vec2(-tx.x, 0.));
+        float dR = readDepth(vUv + vec2( tx.x, 0.));
+        float dU = readDepth(vUv + vec2(0.,  tx.y));
+        float dD = readDepth(vUv + vec2(0., -tx.y));
+        float dTL= readDepth(vUv + vec2(-tx.x,  tx.y));
+        float dTR= readDepth(vUv + vec2( tx.x,  tx.y));
+        float dBL= readDepth(vUv + vec2(-tx.x, -tx.y));
+        float dBR= readDepth(vUv + vec2( tx.x, -tx.y));
+
+        float gx = dTL + 2.0*dL + dBL - dTR - 2.0*dR - dBR;
+        float gy = dTL + 2.0*dU + dTR - dBL - 2.0*dD - dBR;
+        float edge = sqrt(gx*gx + gy*gy);
+        edge = smoothstep(0.0015, 0.007, edge);
+
+        vec4 col = texture2D(tDiffuse, vUv);
+
+        /* outline */
+        col.rgb = mix(col.rgb, vec3(0.12, 0.08, 0.15), edge * 0.88);
+
+        /* vignette */
+        vec2 cv = vUv - 0.5;
+        col.rgb *= 1.0 - dot(cv,cv) * 0.45;
+
+        /* warm color grade */
+        col.r *= 1.04;
+        col.b *= 0.96;
+
+        /* slight saturation boost */
+        float lum = dot(col.rgb, vec3(0.299, 0.587, 0.114));
+        col.rgb = mix(vec3(lum), col.rgb, 1.12);
+
+        gl_FragColor = col;
+      }
+    `,
+  });
+
+  postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat);
+  postScene.add(postQuad);
+}
+
+/* ─────────── GROUND ─────────── */
+function createGround() {
+  /* Large grass/ground plane */
+  const geoG = new THREE.PlaneGeometry(120, 120);
+  const matG = toon(COLORS.grass, { fine: true });
+  const ground = new THREE.Mesh(geoG, matG);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.02;
+  ground.receiveShadow = true;
+  scene.add(ground);
+}
+
+/* ─────────── STREET ─────────── */
+function createStreet() {
+  /* Asphalt road */
+  const road = mesh(new THREE.PlaneGeometry(6, 70), toon(COLORS.asphalt, { fine:true }));
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(0, 0.01, 0);
+  road.receiveShadow = true;
+  scene.add(road);
+
+  /* Sidewalks */
+  [-3.8, 3.8].forEach(x => {
+    const sw = mesh(new THREE.BoxGeometry(1.6, 0.12, 70), toon(COLORS.sidewalk));
+    sw.position.set(x * (x > 0 ? 1 : 1), 0.06, 0);
+    sw.position.x = x;
+    sw.receiveShadow = true;
+    scene.add(sw);
+  });
+
+  /* Curbs */
+  [-3.05, 2.95].forEach(x => {
+    const c = mesh(new THREE.BoxGeometry(0.1, 0.12, 70), toon(COLORS.curb));
+    c.position.set(x, 0.06, 0);
+    scene.add(c);
+  });
+
+  /* Center line (dashed) */
+  for (let z = -34; z < 34; z += 3) {
+    const dash = mesh(new THREE.PlaneGeometry(0.12, 1.5), flat(0xEEEEDD));
+    dash.rotation.x = -Math.PI / 2;
+    dash.position.set(0, 0.02, z);
+    scene.add(dash);
+  }
+
+  /* Road edge lines */
+  [-2.7, 2.7].forEach(x => {
+    const line = mesh(new THREE.PlaneGeometry(0.1, 70), flat(0xEEEEDD));
+    line.rotation.x = -Math.PI / 2;
+    line.position.set(x, 0.02, 0);
+    scene.add(line);
+  });
+}
+
+/* ─────────── RAILWAY ─────────── */
+function createRailway() {
+  /* Gravel bed */
+  const bed = mesh(new THREE.BoxGeometry(3.5, 0.15, 70), toon(COLORS.gravel, { fine:true }));
+  bed.position.set(-6.5, 0.07, 0);
+  bed.receiveShadow = true;
+  scene.add(bed);
+
+  /* Rails */
+  [-5.8, -7.2].forEach(x => {
+    const railTop = mesh(new THREE.BoxGeometry(0.08, 0.1, 70), toon(COLORS.rail));
+    railTop.position.set(x, 0.2, 0);
+    scene.add(railTop);
+    const railWeb = mesh(new THREE.BoxGeometry(0.04, 0.12, 70), toon(0x666666));
+    railWeb.position.set(x, 0.1, 0);
+    scene.add(railWeb);
+  });
+
+  /* Ties */
+  const tieGeo = new THREE.BoxGeometry(2.2, 0.08, 0.14);
+  const tieMat = toon(COLORS.tie);
+  for (let z = -34; z < 34; z += 0.7) {
+    const tie = mesh(tieGeo, tieMat);
+    tie.position.set(-6.5, 0.15, z);
+    scene.add(tie);
+  }
+}
+
+/* ─────────── RAILWAY CROSSING ─────────── */
+function createCrossing() {
+  const cz = 4;
+
+  /* Road surface across tracks */
+  const crossRoad = mesh(new THREE.PlaneGeometry(5, 3), toon(COLORS.asphalt, { fine:true }));
+  crossRoad.rotation.x = -Math.PI / 2;
+  crossRoad.position.set(-6.5, 0.25, cz);
+  scene.add(crossRoad);
+
+  /* Warning stripes on road */
+  for (let i = -2; i <= 2; i++) {
+    const stripe = mesh(new THREE.PlaneGeometry(0.15, 2.8), flat(0xFFFF66));
+    stripe.rotation.x = -Math.PI / 2;
+    stripe.position.set(-6.5 + i * 0.5, 0.26, cz);
+    scene.add(stripe);
+  }
+
+  /* Barrier posts */
+  const postGeo = new THREE.BoxGeometry(0.18, 2.8, 0.18);
+  const postMat = toon(0x555555);
+
+  const leftPost = mesh(postGeo, postMat);
+  leftPost.position.set(-4.2, 1.4, cz);
+  leftPost.castShadow = true;
+  scene.add(leftPost);
+
+  const rightPost = mesh(postGeo, postMat);
+  rightPost.position.set(-8.8, 1.4, cz);
+  rightPost.castShadow = true;
+  scene.add(rightPost);
+
+  /* Warning lights on posts */
+  const lightGeo = new THREE.SphereGeometry(0.12, 8, 6);
+  crossingLightL = mesh(lightGeo, flat(0x440000));
+  crossingLightL.position.set(-4.2, 2.7, cz + 0.15);
+  scene.add(crossingLightL);
+  crossingLightR = mesh(lightGeo, flat(0x440000));
+  crossingLightR.position.set(-8.8, 2.7, cz + 0.15);
+  scene.add(crossingLightR);
+
+  /* Barrier arms */
+  const armGeo = new THREE.BoxGeometry(3.0, 0.07, 0.07);
+  armGeo.translate(1.5, 0, 0);
+  const armColors = [COLORS.barrier, COLORS.barrierDark, COLORS.barrier, COLORS.barrierDark, COLORS.barrier];
+
+  function makeArm() {
+    const g = new THREE.Group();
+    /* Main yellow arm */
+    const arm = mesh(new THREE.BoxGeometry(3.0, 0.07, 0.07), toon(COLORS.barrier));
+    arm.geometry.translate(1.5, 0, 0);
+    g.add(arm);
+    /* Dark stripes */
+    for (let s = 0.4; s < 2.8; s += 0.6) {
+      const stripe = mesh(new THREE.BoxGeometry(0.15, 0.075, 0.075), toon(COLORS.barrierDark));
+      stripe.position.x = s;
+      g.add(stripe);
+    }
+    return g;
+  }
+
+  leftBarrier = makeArm();
+  leftBarrier.position.set(-4.2, 2.4, cz);
+  scene.add(leftBarrier);
+
+  rightBarrier = makeArm();
+  rightBarrier.position.set(-8.8, 2.4, cz);
+  rightBarrier.rotation.y = Math.PI;
+  scene.add(rightBarrier);
+
+  /* Crossing sign (X shape) */
+  const signPost = mesh(new THREE.CylinderGeometry(0.04, 0.04, 3.2), toon(0x666666));
+  signPost.position.set(-4.2, 1.6 + 1.6, cz - 0.3);
+  scene.add(signPost);
+  const xSign1 = mesh(new THREE.BoxGeometry(0.6, 0.08, 0.04), toon(0xEEEE44));
+  xSign1.position.set(-4.2, 3.6, cz - 0.3);
+  xSign1.rotation.z = Math.PI / 4;
+  scene.add(xSign1);
+  const xSign2 = xSign1.clone();
+  xSign2.rotation.z = -Math.PI / 4;
+  scene.add(xSign2);
+}
+
+/* ─────────── BUILDINGS ─────────── */
+function createBuildings() {
+  /* Helper: build a house */
+  function house(x, z, w, d, h, wallColor, roofColor, opts = {}) {
+    const g = new THREE.Group();
+
+    /* Walls */
+    const walls = mesh(new THREE.BoxGeometry(w, h, d), toon(wallColor));
+    walls.position.y = h / 2;
+    walls.castShadow = true;
+    walls.receiveShadow = true;
+    g.add(walls);
+
+    /* Roof — hip/pyramid style */
+    const rh = h * 0.38;
+    const diag = Math.sqrt(w * w + d * d) * 0.56;
+    const roof = mesh(new THREE.ConeGeometry(diag, rh, 4), toon(roofColor));
+    roof.position.y = h + rh / 2 - 0.08;
+    roof.rotation.y = Math.atan2(d, w);
+    roof.castShadow = true;
+    g.add(roof);
+
+    /* Roof overhang (flat slab) */
+    const overhang = mesh(new THREE.BoxGeometry(w + 0.4, 0.06, d + 0.4), toon(roofColor));
+    overhang.position.y = h - 0.03;
+    g.add(overhang);
+
+    /* Windows */
+    const winW = w * 0.18, winH = h * 0.15;
+    const winGeo = new THREE.PlaneGeometry(winW, winH);
+    const winMat = toon(opts.lit ? COLORS.windowLit : COLORS.window);
+    const windowFrameMat = toon(wallColor === COLORS.wall3 ? 0x556666 : 0x887766);
+
+    /* Front windows */
+    const nWin = Math.floor(w / 1.2);
+    for (let i = 0; i < nWin; i++) {
+      const wx = -w / 2 + w / (nWin + 1) * (i + 1);
+      [h * 0.35, h * 0.7].forEach(wy => {
+        const win = mesh(winGeo, winMat);
+        win.position.set(wx, wy, d / 2 + 0.01);
+        g.add(win);
+        /* Window frame */
+        const frame = mesh(new THREE.PlaneGeometry(winW + 0.04, winH + 0.04), windowFrameMat);
+        frame.position.set(wx, wy, d / 2 + 0.005);
+        g.add(frame);
+      });
+    }
+
+    /* Side windows */
+    const nSideWin = Math.floor(d / 1.5);
+    for (let i = 0; i < nSideWin; i++) {
+      const wz = -d / 2 + d / (nSideWin + 1) * (i + 1);
+      const win = mesh(winGeo, winMat);
+      win.position.set(w / 2 + 0.01, h * 0.5, wz);
+      win.rotation.y = Math.PI / 2;
+      g.add(win);
+    }
+
+    /* Door (front) */
+    if (opts.door !== false) {
+      const doorGeo = new THREE.PlaneGeometry(w * 0.18, h * 0.35);
+      const door = mesh(doorGeo, toon(0x5A4535));
+      door.position.set(0, h * 0.175, d / 2 + 0.01);
+      g.add(door);
+    }
+
+    /* Small fence/wall */
+    if (opts.fence) {
+      const fenceGeo = new THREE.BoxGeometry(w + 0.8, 0.8, 0.1);
+      const fence = mesh(fenceGeo, toon(COLORS.fence));
+      fence.position.set(0, 0.4, d / 2 + 0.6);
+      fence.castShadow = true;
+      g.add(fence);
+      /* Gate opening */
+      const gate = mesh(new THREE.BoxGeometry(0.8, 0.8, 0.12), toon(COLORS.grass));
+      gate.position.set(0, 0.4, d / 2 + 0.6);
+      g.add(gate);
+    }
+
+    g.position.set(x, 0, z);
+    if (opts.rotY) g.rotation.y = opts.rotY;
+    scene.add(g);
+    return g;
+  }
+
+  /* Place houses — right side of street */
+  house(7.5, -12, 5, 4.5, 4.2, COLORS.wall1, COLORS.roof1, { fence:true, lit:false });
+  house(7.5, -2,  4, 3.8, 3.5, COLORS.wall3, COLORS.roof2, { fence:true, lit:true });
+  house(8,   14, 5.5, 5, 4.5, COLORS.wall2, COLORS.roof3, { fence:true });
+  house(7.5, 22, 4.5, 4, 3.8, COLORS.wall4, COLORS.roof4, { fence:true, lit:true });
+
+  /* Left side — between street and railway */
+  house(-3.5, -20, 3.5, 3, 3.2, COLORS.wall4, COLORS.roof2, { rotY: Math.PI, fence:false, door:false });
+  house(-3.8, 16, 3, 3, 3, COLORS.wall1, COLORS.roof4, { rotY: Math.PI, fence:false });
+
+  /* Background buildings (far) */
+  house(14, -8, 6, 5, 5, COLORS.wall2, COLORS.roof1, { door:false });
+  house(14, 8, 5, 4, 4.5, COLORS.wall3, COLORS.roof3, { door:false });
+  house(14, 20, 5, 5, 3.8, COLORS.wall1, COLORS.roof2, { door:false });
+
+  /* Far left background */
+  house(-12, -15, 5, 4, 4, COLORS.wall2, COLORS.roof1, { door:false, rotY: Math.PI });
+  house(-12, 10, 6, 5, 4.5, COLORS.wall4, COLORS.roof3, { door:false });
+}
+
+/* ─────────── SHOP ─────────── */
+function createShop() {
+  const g = new THREE.Group();
+  const sx = 6.5, sz = 6;
+
+  /* Building */
+  const body = mesh(new THREE.BoxGeometry(4, 3.2, 3.5), toon(COLORS.wall1));
+  body.position.y = 1.6;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+
+  /* Flat roof */
+  const roof = mesh(new THREE.BoxGeometry(4.4, 0.15, 3.9), toon(COLORS.roof2));
+  roof.position.y = 3.25;
+  g.add(roof);
+
+  /* Awning (striped red/white) */
+  const awningShape = new THREE.Shape();
+  awningShape.moveTo(-2.2, 0);
+  awningShape.lineTo(2.2, 0);
+  awningShape.lineTo(2.2, -0.7);
+  awningShape.lineTo(-2.2, -0.7);
+  awningShape.closePath();
+  const awningGeo = new THREE.ExtrudeGeometry(awningShape, { depth: 1.2, bevelEnabled: false });
+  const awning = mesh(awningGeo, toon(COLORS.shopAwning));
+  awning.position.set(0, 2.5, 1.75 + 0.6);
+  awning.rotation.x = -0.2;
+  awning.castShadow = true;
+  g.add(awning);
+
+  /* Shop front - large window/display */
+  const display = mesh(new THREE.PlaneGeometry(2.8, 1.5), toon(COLORS.windowLit, { emissive: 0x886644, emissiveIntensity: 0.3 }));
+  display.position.set(0, 1.5, 1.76);
+  g.add(display);
+
+  /* Door */
+  const door = mesh(new THREE.PlaneGeometry(0.9, 2), toon(0x5A4535));
+  door.position.set(-0.8, 1, 1.76);
+  g.add(door);
+
+  /* Noren (curtain) */
+  const norenGeo = new THREE.PlaneGeometry(0.85, 0.5);
+  const noren = mesh(norenGeo, toon(0x223388, { side: THREE.DoubleSide }));
+  noren.position.set(-0.8, 2.15, 1.78);
+  g.add(noren);
+
+  /* Shop sign */
+  const signBoard = mesh(new THREE.BoxGeometry(1.5, 0.5, 0.06), toon(0x886633));
+  signBoard.position.set(0.6, 2.8, 1.8);
+  g.add(signBoard);
+
+  /* Interior warm light */
+  const shopLight = new THREE.PointLight(0xFFCC77, 0.6, 8);
+  shopLight.position.set(0, 2, 1.5);
+  g.add(shopLight);
+
+  g.position.set(sx, 0, sz);
+  scene.add(g);
+}
+
+/* ─────────── VENDING MACHINES ─────────── */
+function createVendingMachines() {
+  function vendingMachine(x, z, bodyColor, glowColor) {
+    const g = new THREE.Group();
+
+    /* Body */
+    const body = mesh(new THREE.BoxGeometry(0.8, 1.8, 0.65), toon(bodyColor));
+    body.position.y = 0.9;
+    body.castShadow = true;
+    g.add(body);
+
+    /* Display panel (emissive) */
+    const panel = mesh(new THREE.PlaneGeometry(0.65, 1.2), toon(0xFFFFFF, {
+      emissive: glowColor, emissiveIntensity: 0.7,
+    }));
+    panel.position.set(0, 1.05, 0.33);
+    g.add(panel);
+
+    /* Drink rows (colored rectangles on panel) */
+    const drinkColors = [0xDD4444, 0x44AA44, 0x4488DD, 0xDDAA22, 0xDD6622, 0x8844AA];
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        const drink = mesh(new THREE.PlaneGeometry(0.12, 0.22), flat(
+          drinkColors[(row * 3 + col) % drinkColors.length]
+        ));
+        drink.position.set(-0.18 + col * 0.18, 0.7 + row * 0.32, 0.335);
+        g.add(drink);
+      }
+    }
+
+    /* Coin slot */
+    const slot = mesh(new THREE.PlaneGeometry(0.06, 0.12), flat(0x222222));
+    slot.position.set(0.25, 0.6, 0.335);
+    g.add(slot);
+
+    /* Top cap */
+    const cap = mesh(new THREE.BoxGeometry(0.84, 0.08, 0.69), toon(bodyColor));
+    cap.position.y = 1.84;
+    g.add(cap);
+
+    /* Glow light */
+    const glow = new THREE.PointLight(new THREE.Color(glowColor), 0.45, 5);
+    glow.position.set(0, 1.2, 0.8);
+    g.add(glow);
+
+    g.position.set(x, 0, z);
+    scene.add(g);
+    return g;
+  }
+
+  vendingMachine(4.7, -5.5, COLORS.vendRed,  0xFF6644);
+  vendingMachine(4.7, -4.3, COLORS.vendBlue, 0x4488FF);
+}
+
+/* ─────────── CHERRY BLOSSOM TREES ─────────── */
+function createCherryBlossomTrees() {
+  function cherryTree(x, z, scale = 1) {
+    const g = new THREE.Group();
+
+    /* Trunk */
+    const trunkH = 2.5 * scale;
+    const trunk = mesh(
+      new THREE.CylinderGeometry(0.12 * scale, 0.18 * scale, trunkH, 6),
+      toon(COLORS.trunk)
+    );
+    trunk.position.y = trunkH / 2;
+    trunk.castShadow = true;
+    g.add(trunk);
+
+    /* Branches (slight curves via offset cylinders) */
+    const branchGeo = new THREE.CylinderGeometry(0.04 * scale, 0.08 * scale, 1.5 * scale, 5);
+    for (let i = 0; i < 3; i++) {
+      const angle = (i / 3) * Math.PI * 2 + Math.random() * 0.5;
+      const br = mesh(branchGeo, toon(COLORS.trunk));
+      br.position.set(
+        Math.cos(angle) * 0.5 * scale,
+        trunkH * 0.7 + Math.random() * 0.5 * scale,
+        Math.sin(angle) * 0.5 * scale
+      );
+      br.rotation.z = Math.cos(angle) * 0.6;
+      br.rotation.x = Math.sin(angle) * 0.6;
+      g.add(br);
+    }
+
+    /* Canopy — cluster of spheres for fluffy sakura look */
+    const canopyMat = toon(COLORS.sakura);
+    const canopyDarkMat = toon(COLORS.sakuraDark);
+    const canopyPositions = [
+      [0, trunkH + 0.8 * scale, 0, 1.2 * scale],
+      [0.6 * scale, trunkH + 0.3 * scale, 0.4 * scale, 0.85 * scale],
+      [-0.5 * scale, trunkH + 0.4 * scale, -0.3 * scale, 0.9 * scale],
+      [0.3 * scale, trunkH + 0.5 * scale, -0.6 * scale, 0.75 * scale],
+      [-0.4 * scale, trunkH + 0.6 * scale, 0.5 * scale, 0.8 * scale],
+      [0, trunkH + 1.3 * scale, 0.2 * scale, 0.7 * scale],
+      [0.7 * scale, trunkH + 0.7 * scale, -0.2 * scale, 0.6 * scale],
+    ];
+    canopyPositions.forEach((p, i) => {
+      const sph = mesh(
+        new THREE.IcosahedronGeometry(p[3], 1),
+        i % 2 === 0 ? canopyMat : canopyDarkMat
+      );
+      sph.position.set(p[0], p[1], p[2]);
+      sph.castShadow = true;
+      g.add(sph);
+    });
+
+    g.position.set(x, 0, z);
+    scene.add(g);
+    return g;
+  }
+
+  /* Place cherry blossom trees */
+  cherryTree(3.5, -9, 1.1);
+  cherryTree(-3.0, 10, 1.0);
+  cherryTree(4.0, 20, 0.95);
+  cherryTree(-3.5, -14, 0.9);
+  cherryTree(2.5, 28, 1.05);
+  cherryTree(-4.5, 24, 0.85);
+
+  /* Regular green trees (for variety) */
+  function greenTree(x, z, s = 1) {
+    const g = new THREE.Group();
+    const trunk = mesh(
+      new THREE.CylinderGeometry(0.1 * s, 0.15 * s, 2.5 * s, 6),
+      toon(COLORS.trunk)
+    );
+    trunk.position.y = 1.25 * s;
+    trunk.castShadow = true;
+    g.add(trunk);
+    const canopy = mesh(
+      new THREE.IcosahedronGeometry(1.1 * s, 1),
+      toon(COLORS.leaf)
+    );
+    canopy.position.y = 3.2 * s;
+    canopy.castShadow = true;
+    g.add(canopy);
+    g.position.set(x, 0, z);
+    scene.add(g);
+  }
+  greenTree(10, -18, 1.1);
+  greenTree(11, 26, 0.9);
+  greenTree(-10, 0, 1.0);
+  greenTree(-11, 20, 0.85);
+}
+
+/* ─────────── PETAL SYSTEM ─────────── */
+function createPetalSystem() {
+  const COUNT = 350;
+  const petalGeo = new THREE.PlaneGeometry(0.06, 0.09);
+  const petalMat = new THREE.MeshBasicMaterial({
+    color: COLORS.sakura,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+  });
+
+  petalMesh = new THREE.InstancedMesh(petalGeo, petalMat, COUNT);
+  petalMesh.frustumCulled = false;
+
+  petalData = [];
+  const dummy = new THREE.Object3D();
+
+  for (let i = 0; i < COUNT; i++) {
+    const d = {
+      x: (Math.random() - 0.5) * 50,
+      y: Math.random() * 12 + 1,
+      z: (Math.random() - 0.5) * 50,
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: -(0.25 + Math.random() * 0.45),
+      vz: (Math.random() - 0.5) * 0.4,
+      rx: Math.random() * Math.PI * 2,
+      ry: Math.random() * Math.PI * 2,
+      rz: Math.random() * Math.PI * 2,
+      rs: 1 + Math.random() * 2,
+      phase: Math.random() * Math.PI * 2,
+    };
+    petalData.push(d);
+    dummy.position.set(d.x, d.y, d.z);
+    dummy.rotation.set(d.rx, d.ry, d.rz);
+    dummy.updateMatrix();
+    petalMesh.setMatrixAt(i, dummy.matrix);
+  }
+  petalMesh.instanceMatrix.needsUpdate = true;
+  scene.add(petalMesh);
+}
+
+/* ─────────── UTILITY POLES ─────────── */
+function createUtilityPoles() {
+  function utilityPole(x, z) {
+    const g = new THREE.Group();
+
+    /* Main pole */
+    const poleGeo = new THREE.CylinderGeometry(0.08, 0.1, 7, 6);
+    const pole = mesh(poleGeo, toon(COLORS.pole));
+    pole.position.y = 3.5;
+    pole.castShadow = true;
+    g.add(pole);
+
+    /* Cross arms */
+    for (let i = 0; i < 3; i++) {
+      const armGeo = new THREE.CylinderGeometry(0.03, 0.03, 1.8, 4);
+      const arm = mesh(armGeo, toon(COLORS.pole));
+      arm.position.y = 5.5 + i * 0.6;
+      arm.rotation.z = Math.PI / 2;
+      g.add(arm);
+
+      /* Insulators */
+      [-0.7, 0.7].forEach(offset => {
+        const ins = mesh(new THREE.CylinderGeometry(0.04, 0.03, 0.12, 6), toon(0xCCBBAA));
+        ins.position.set(offset, 5.5 + i * 0.6 + 0.06, 0);
+        g.add(ins);
+      });
+    }
+
+    /* Transformer (on some poles) */
+    if (Math.random() > 0.5) {
+      const tr = mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 8), toon(0x555555));
+      tr.position.y = 4.5;
+      g.add(tr);
+    }
+
+    g.position.set(x, 0, z);
+    scene.add(g);
+    return g;
+  }
+
+  /* Place poles along the street */
+  const poles = [];
+  for (let z = -25; z <= 25; z += 10) {
+    poles.push(utilityPole(4.2, z));
+  }
+  /* Railway side poles */
+  for (let z = -20; z <= 20; z += 15) {
+    poles.push(utilityPole(-4.8, z));
+  }
+  return poles;
+}
+
+/* ─────────── WIRES ─────────── */
+function createWires() {
+  const wireMat = new THREE.LineBasicMaterial({ color: COLORS.wire, linewidth: 1 });
+
+  function wire(start, end, sag = 0.15, segs = 12) {
+    const pts = [];
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      pts.push(new THREE.Vector3(
+        start.x + (end.x - start.x) * t,
+        start.y + (end.y - start.y) * t - sag * Math.sin(t * Math.PI),
+        start.z + (end.z - start.z) * t,
+      ));
+    }
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), wireMat);
+    scene.add(line);
+  }
+
+  /* Wires along street-side poles (x=4.2) */
+  for (let zi = -25; zi < 25; zi += 10) {
+    for (let layer = 0; layer < 3; layer++) {
+      const y = 5.5 + layer * 0.6;
+      [-0.7, 0.7].forEach(dx => {
+        wire(
+          new THREE.Vector3(4.2 + dx, y, zi),
+          new THREE.Vector3(4.2 + dx, y, zi + 10),
+          0.12 + layer * 0.03
+        );
+      });
+    }
+  }
+
+  /* Cross-street wires (connecting two sides) */
+  for (let z = -15; z <= 15; z += 15) {
+    for (let layer = 0; layer < 2; layer++) {
+      wire(
+        new THREE.Vector3(4.2, 5.5 + layer * 0.6, z),
+        new THREE.Vector3(-4.8, 5.5 + layer * 0.6, z),
+        0.3
+      );
+    }
+  }
+}
+
+/* ─────────── TRAIN ─────────── */
+function createTrain() {
+  const g = new THREE.Group();
+
+  function trainCar(isHead) {
+    const car = new THREE.Group();
+    const L = 8, W = 2.4, H = 2.6;
+
+    /* Body */
+    const body = mesh(new THREE.BoxGeometry(W, H, L), toon(COLORS.trainBody));
+    body.position.y = H / 2 + 0.35;
+    body.castShadow = true;
+    car.add(body);
+
+    /* Stripe */
+    [W / 2 + 0.01, -(W / 2 + 0.01)].forEach(sx => {
+      const stripe = mesh(new THREE.PlaneGeometry(L, 0.3), toon(COLORS.trainStripe));
+      stripe.position.set(sx, 1.8, 0);
+      stripe.rotation.y = sx > 0 ? Math.PI / 2 : -Math.PI / 2;
+      car.add(stripe);
+    });
+
+    /* Windows */
+    for (let wi = -3; wi <= 3; wi++) {
+      [W / 2 + 0.015, -(W / 2 + 0.015)].forEach(sx => {
+        const win = mesh(new THREE.PlaneGeometry(0.7, 0.65), toon(COLORS.trainWindow));
+        win.position.set(sx, 1.6, wi * 1.0);
+        win.rotation.y = sx > 0 ? Math.PI / 2 : -Math.PI / 2;
+        car.add(win);
+      });
+    }
+
+    /* Roof */
+    const roofGeo = new THREE.BoxGeometry(W + 0.1, 0.12, L + 0.1);
+    const roof = mesh(roofGeo, toon(0x556655));
+    roof.position.y = H + 0.35;
+    car.add(roof);
+
+    /* Undercarriage */
+    const under = mesh(new THREE.BoxGeometry(W - 0.2, 0.3, L - 0.5), toon(0x333333));
+    under.position.y = 0.2;
+    car.add(under);
+
+    /* Wheels/bogies */
+    [-L * 0.3, L * 0.3].forEach(bz => {
+      const bogie = mesh(new THREE.BoxGeometry(W - 0.4, 0.2, 1.2), toon(0x333333));
+      bogie.position.set(0, 0.15, bz);
+      car.add(bogie);
+    });
+
+    /* Head/face */
+    if (isHead) {
+      const face = mesh(new THREE.PlaneGeometry(W - 0.1, H - 0.2), toon(0x2D6B44));
+      face.position.set(0, H / 2 + 0.35, -L / 2 - 0.01);
+      car.add(face);
+      /* Headlights */
+      [-0.6, 0.6].forEach(hx => {
+        const hl = mesh(new THREE.CircleGeometry(0.12, 8), flat(0xFFFFCC));
+        hl.position.set(hx, 1.2, -L / 2 - 0.02);
+        car.add(hl);
+      });
+      /* Windshield */
+      const ws = mesh(new THREE.PlaneGeometry(1.4, 0.8), toon(COLORS.trainWindow));
+      ws.position.set(0, 2.2, -L / 2 - 0.02);
+      car.add(ws);
+    }
+
+    return car;
+  }
+
+  /* 3 cars */
+  for (let i = 0; i < 3; i++) {
+    const car = trainCar(i === 0);
+    car.position.z = i * 9;
+    g.add(car);
+  }
+
+  /* Position on railway tracks */
+  g.position.x = -6.5;
+  g.position.z = -80; /* start off-screen */
+  scene.add(g);
+
+  train = g;
+  trainState = {
+    phase: 'idle',
+    timer: 5, /* first train comes after 5 seconds */
+    position: -80,
+    speed: 18,
+  };
+}
+
+/* ─────────── PROPS ─────────── */
+function createProps() {
+  /* Bicycles */
+  function bicycle(x, z, rotY = 0) {
+    const g = new THREE.Group();
+    const wheelGeo = new THREE.TorusGeometry(0.28, 0.02, 6, 12);
+    const wheelMat = toon(0x444444);
+    const frameMat = toon(0x888888);
+
+    /* Wheels */
+    const fWheel = mesh(wheelGeo, wheelMat);
+    fWheel.position.set(0.3, 0.28, 0);
+    fWheel.rotation.y = Math.PI / 2;
+    g.add(fWheel);
+    const bWheel = mesh(wheelGeo, wheelMat);
+    bWheel.position.set(-0.3, 0.28, 0);
+    bWheel.rotation.y = Math.PI / 2;
+    g.add(bWheel);
+
+    /* Frame */
+    const f1 = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.65), frameMat);
+    f1.position.set(0, 0.32, 0); f1.rotation.z = Math.PI / 2;
+    g.add(f1);
+    const f2 = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.4), frameMat);
+    f2.position.set(0.1, 0.42, 0); f2.rotation.z = 0.5;
+    g.add(f2);
+    const f3 = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.35), frameMat);
+    f3.position.set(-0.15, 0.4, 0); f3.rotation.z = -0.3;
+    g.add(f3);
+
+    /* Seat */
+    const seat = mesh(new THREE.BoxGeometry(0.14, 0.02, 0.07), toon(0x222222));
+    seat.position.set(-0.05, 0.58, 0);
+    g.add(seat);
+
+    /* Handlebar */
+    const hb = mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.22), frameMat);
+    hb.position.set(0.3, 0.52, 0); hb.rotation.x = Math.PI / 2;
+    g.add(hb);
+
+    /* Kickstand */
+    const ks = mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.3), frameMat);
+    ks.position.set(-0.15, 0.15, 0.05); ks.rotation.z = 0.5;
+    g.add(ks);
+
+    g.position.set(x, 0, z);
+    g.rotation.y = rotY;
+    g.castShadow = true;
+    scene.add(g);
+  }
+
+  bicycle(4.3, 0, 0.15);
+  bicycle(4.5, 0.5, -0.1);
+  bicycle(-3.2, -7, Math.PI * 0.8);
+
+  /* Road mirrors */
+  function roadMirror(x, z, rotY = 0) {
+    const g = new THREE.Group();
+    const pole = mesh(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 6), toon(0x888888));
+    pole.position.y = 1.25;
+    g.add(pole);
+
+    const mirrorFrame = mesh(new THREE.CircleGeometry(0.28, 16), toon(0xFF6600, { side: THREE.DoubleSide }));
+    mirrorFrame.position.y = 2.4;
+    mirrorFrame.rotation.y = rotY;
+    g.add(mirrorFrame);
+    const mirrorFace = mesh(new THREE.CircleGeometry(0.22, 16), toon(0xAABBCC, { side: THREE.DoubleSide }));
+    mirrorFace.position.set(0, 2.4, 0.01);
+    mirrorFace.rotation.y = rotY;
+    g.add(mirrorFace);
+
+    g.position.set(x, 0, z);
+    scene.add(g);
+  }
+
+  roadMirror(3.2, 3.5, -0.3);
+  roadMirror(-3.5, 4.5, Math.PI + 0.3);
+
+  /* Signs */
+  function signPost(x, z, color, rotY = 0) {
+    const g = new THREE.Group();
+    const pole = mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.8, 6), toon(0x777777));
+    pole.position.y = 1.4;
+    g.add(pole);
+    const board = mesh(new THREE.BoxGeometry(0.55, 0.45, 0.04), toon(color));
+    board.position.y = 2.5;
+    board.rotation.y = rotY;
+    g.add(board);
+    /* Text indication line */
+    const textLine = mesh(new THREE.PlaneGeometry(0.35, 0.04), flat(0xFFFFFF));
+    textLine.position.set(0, 2.5, 0.025);
+    textLine.rotation.y = rotY;
+    g.add(textLine);
+    const textLine2 = mesh(new THREE.PlaneGeometry(0.28, 0.04), flat(0xFFFFFF));
+    textLine2.position.set(0, 2.42, 0.025);
+    textLine2.rotation.y = rotY;
+    g.add(textLine2);
+
+    g.position.set(x, 0, z);
+    scene.add(g);
+  }
+
+  signPost(3.1, -14, COLORS.sign);
+  signPost(-3.3, 8, 0x338833, Math.PI);
+
+  /* Potted plants */
+  function pottedPlant(x, z) {
+    const g = new THREE.Group();
+    const pot = mesh(new THREE.CylinderGeometry(0.13, 0.09, 0.22, 8), toon(COLORS.pot));
+    pot.position.y = 0.11;
+    g.add(pot);
+    const plant = mesh(new THREE.SphereGeometry(0.16, 6, 5), toon(COLORS.plant));
+    plant.position.y = 0.32;
+    g.add(plant);
+    g.position.set(x, 0, z);
+    scene.add(g);
+  }
+
+  pottedPlant(5.0, 5.0);
+  pottedPlant(5.2, 5.5);
+  pottedPlant(4.8, -2.5);
+  pottedPlant(5.0, 14.5);
+  pottedPlant(5.2, 14.0);
+  pottedPlant(-3.0, 17);
+
+  /* Mailbox (Japanese red) */
+  function mailbox(x, z) {
+    const g = new THREE.Group();
+    const body = mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.9, 8), toon(COLORS.mailbox));
+    body.position.y = 0.45;
+    body.castShadow = true;
+    g.add(body);
+    const cap = mesh(new THREE.SphereGeometry(0.19, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2), toon(COLORS.mailbox));
+    cap.position.y = 0.9;
+    g.add(cap);
+    /* Slot */
+    const slot = mesh(new THREE.PlaneGeometry(0.18, 0.03), flat(0x222222));
+    slot.position.set(0, 0.65, 0.185);
+    g.add(slot);
+    g.position.set(x, 0, z);
+    scene.add(g);
+  }
+
+  mailbox(4.5, 8);
+
+  /* Manhole covers */
+  function manhole(x, z) {
+    const cover = mesh(new THREE.CircleGeometry(0.3, 12), toon(0x555555));
+    cover.rotation.x = -Math.PI / 2;
+    cover.position.set(x, 0.015, z);
+    scene.add(cover);
+    const ring = mesh(new THREE.RingGeometry(0.28, 0.32, 12), toon(0x444444));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, 0.016, z);
+    scene.add(ring);
+  }
+
+  manhole(0.5, -5);
+  manhole(-1, 15);
+
+  /* Stone wall / retaining wall near railway */
+  const wallGeo = new THREE.BoxGeometry(0.3, 0.6, 50);
+  const stoneWall = mesh(wallGeo, toon(0x8A8078));
+  stoneWall.position.set(-4.6, 0.3, 0);
+  scene.add(stoneWall);
+
+  /* Guardrail along railway */
+  for (let z = -24; z <= 24; z += 2) {
+    const guardPost = mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.7, 4), toon(0x999999));
+    guardPost.position.set(-4.45, 0.95, z);
+    scene.add(guardPost);
+  }
+  /* Horizontal rails */
+  const guardRailGeo = new THREE.CylinderGeometry(0.015, 0.015, 48, 4);
+  const guardRail = mesh(guardRailGeo, toon(0xAAAAAA));
+  guardRail.position.set(-4.45, 1.1, 0);
+  guardRail.rotation.x = Math.PI / 2;
+  scene.add(guardRail);
+  const guardRail2 = guardRail.clone();
+  guardRail2.position.y = 0.85;
+  scene.add(guardRail2);
+
+  /* Small cat sitting on wall */
+  function cat(x, z) {
+    const g = new THREE.Group();
+    /* Body */
+    const bodyGeo = new THREE.SphereGeometry(0.15, 6, 5);
+    bodyGeo.scale(1, 0.8, 1.3);
+    const catBody = mesh(bodyGeo, toon(0xFF8833));
+    catBody.position.y = 0.12;
+    g.add(catBody);
+    /* Head */
+    const head = mesh(new THREE.SphereGeometry(0.1, 6, 5), toon(0xFF8833));
+    head.position.set(0, 0.22, 0.12);
+    g.add(head);
+    /* Ears */
+    [-0.06, 0.06].forEach(ex => {
+      const ear = mesh(new THREE.ConeGeometry(0.04, 0.06, 4), toon(0xFF8833));
+      ear.position.set(ex, 0.32, 0.12);
+      g.add(ear);
+    });
+    /* Tail */
+    const tailGeo = new THREE.CylinderGeometry(0.02, 0.015, 0.25, 4);
+    const tail = mesh(tailGeo, toon(0xFF8833));
+    tail.position.set(0, 0.15, -0.18);
+    tail.rotation.x = -0.6;
+    g.add(tail);
+
+    g.position.set(x, 0.6, z);
+    scene.add(g);
+  }
+
+  cat(-4.45, -3);
+
+  /* Power meter on a house wall */
+  const meter = mesh(new THREE.BoxGeometry(0.3, 0.4, 0.08), toon(0xCCCCBB));
+  meter.position.set(5.0, 1.5, -9.75);
+  scene.add(meter);
+
+  /* Air conditioning unit */
+  function acUnit(x, y, z) {
+    const ac = mesh(new THREE.BoxGeometry(0.6, 0.35, 0.25), toon(0xDDDDCC));
+    ac.position.set(x, y, z);
+    ac.castShadow = true;
+    scene.add(ac);
+  }
+  acUnit(5.01, 2.5, -12);
+  acUnit(5.01, 2.0, 14.5);
+}
+
+/* ─────────── CONTROLS ─────────── */
+function setupControls() {
+  controls = new PointerLockControls(camera, document.body);
+
+  const overlay = document.getElementById('overlay');
+  const crosshair = document.getElementById('crosshair');
+  const hints = document.getElementById('hints');
+
+  overlay.addEventListener('click', () => { controls.lock(); });
+
+  controls.addEventListener('lock', () => {
+    overlay.classList.add('hidden');
+    crosshair.classList.add('show');
+    hints.classList.add('show');
+    setTimeout(() => hints.classList.remove('show'), 5000);
+  });
+
+  controls.addEventListener('unlock', () => {
+    overlay.classList.remove('hidden');
+    crosshair.classList.remove('show');
+    hints.classList.remove('show');
+  });
+}
+
+/* ─────────── INPUT ─────────── */
+function onKeyDown(e) {
+  switch (e.code) {
+    case 'KeyW': case 'ArrowUp':    moveState.f = true; break;
+    case 'KeyS': case 'ArrowDown':  moveState.b = true; break;
+    case 'KeyA': case 'ArrowLeft':  moveState.l = true; break;
+    case 'KeyD': case 'ArrowRight': moveState.r = true; break;
+  }
+}
+function onKeyUp(e) {
+  switch (e.code) {
+    case 'KeyW': case 'ArrowUp':    moveState.f = false; break;
+    case 'KeyS': case 'ArrowDown':  moveState.b = false; break;
+    case 'KeyA': case 'ArrowLeft':  moveState.l = false; break;
+    case 'KeyD': case 'ArrowRight': moveState.r = false; break;
+  }
+}
+
+function updateMovement(dt) {
+  if (!controls.isLocked) return;
+  const speed = 4.5;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0; dir.normalize();
+  const right = new THREE.Vector3();
+  right.crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+
+  const accel = new THREE.Vector3();
+  if (moveState.f) accel.add(dir);
+  if (moveState.b) accel.addScaledVector(dir, -1);
+  if (moveState.l) accel.addScaledVector(right, -1);
+  if (moveState.r) accel.add(right);
+  if (accel.lengthSq() > 0) accel.normalize();
+
+  /* Smooth acceleration */
+  playerVel.lerp(accel.multiplyScalar(speed), Math.min(dt * 8, 1));
+  camera.position.addScaledVector(playerVel, dt);
+
+  /* Keep on ground */
+  camera.position.y = 1.65;
+
+  /* Bounds */
+  camera.position.x = THREE.MathUtils.clamp(camera.position.x, -14, 16);
+  camera.position.z = THREE.MathUtils.clamp(camera.position.z, -32, 32);
+}
+
+/* ─────────── UPDATE FUNCTIONS ─────────── */
+function updateTrain(dt) {
+  const s = trainState;
+  s.timer += dt;
+
+  switch (s.phase) {
+    case 'idle':
+      if (s.timer > 22) { /* train every ~22 seconds */
+        s.phase = 'warning';
+        s.timer = 0;
+        s.position = -75;
+        train.position.z = s.position;
+      }
+      break;
+
+    case 'warning':
+      /* Flash crossing lights and lower barriers */
+      const wt = s.timer;
+      if (crossingLightL) {
+        const flash = Math.sin(wt * 8) > 0;
+        crossingLightL.material.color.setHex(flash ? 0xFF2200 : 0x440000);
+        crossingLightR.material.color.setHex(flash ? 0xFF2200 : 0x440000);
+      }
+      /* Lower barriers */
+      const barrierTarget = -Math.PI / 2 * 0.9;
+      leftBarrier.rotation.z = THREE.MathUtils.lerp(leftBarrier.rotation.z, barrierTarget, dt * 2);
+      rightBarrier.rotation.z = THREE.MathUtils.lerp(rightBarrier.rotation.z, -barrierTarget, dt * 2);
+
+      if (s.timer > 3) {
+        s.phase = 'passing';
+        s.timer = 0;
+      }
+      break;
+
+    case 'passing':
+      /* Move train */
+      s.position += s.speed * dt;
+      train.position.z = s.position;
+
+      /* Keep flashing */
+      const pt = s.timer;
+      if (crossingLightL) {
+        const flash = Math.sin(pt * 8) > 0;
+        crossingLightL.material.color.setHex(flash ? 0xFF2200 : 0x440000);
+        crossingLightR.material.color.setHex(flash ? 0xFF2200 : 0x440000);
+      }
+      /* Keep barriers down */
+      const bt = -Math.PI / 2 * 0.9;
+      leftBarrier.rotation.z = THREE.MathUtils.lerp(leftBarrier.rotation.z, bt, dt * 3);
+      rightBarrier.rotation.z = THREE.MathUtils.lerp(rightBarrier.rotation.z, -bt, dt * 3);
+
+      if (s.position > 75) {
+        s.phase = 'clearing';
+        s.timer = 0;
+      }
+      break;
+
+    case 'clearing':
+      /* Raise barriers */
+      leftBarrier.rotation.z = THREE.MathUtils.lerp(leftBarrier.rotation.z, 0, dt * 2.5);
+      rightBarrier.rotation.z = THREE.MathUtils.lerp(rightBarrier.rotation.z, 0, dt * 2.5);
+      /* Stop flashing */
+      if (crossingLightL) {
+        crossingLightL.material.color.setHex(0x440000);
+        crossingLightR.material.color.setHex(0x440000);
+      }
+      if (s.timer > 3) {
+        s.phase = 'idle';
+        s.timer = 0;
+        train.position.z = -80;
+      }
+      break;
+  }
+}
+
+function updatePetals(dt, time) {
+  if (!petalMesh || !petalData) return;
+  const dummy = new THREE.Object3D();
+
+  for (let i = 0; i < petalData.length; i++) {
+    const d = petalData[i];
+
+    /* Drift motion */
+    d.x += (d.vx + Math.sin(time * 0.5 + d.phase) * 0.15) * dt;
+    d.y += d.vy * dt;
+    d.z += (d.vz + Math.cos(time * 0.7 + d.phase) * 0.1) * dt;
+
+    /* Tumble rotation */
+    d.rx += d.rs * dt * 1.5;
+    d.ry += d.rs * dt * 0.8;
+
+    /* Reset when fallen below ground */
+    if (d.y < -0.5) {
+      d.y = 10 + Math.random() * 5;
+      d.x = (Math.random() - 0.5) * 45;
+      d.z = (Math.random() - 0.5) * 45;
+    }
+
+    dummy.position.set(d.x, d.y, d.z);
+    dummy.rotation.set(d.rx, d.ry, d.rz);
+    dummy.updateMatrix();
+    petalMesh.setMatrixAt(i, dummy.matrix);
+  }
+  petalMesh.instanceMatrix.needsUpdate = true;
+}
+
+/* ─────────── ANIMATION LOOP ─────────── */
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const time = clock.getElapsedTime();
+
+  updateMovement(dt);
+  updateTrain(dt);
+  updatePetals(dt, time);
+
+  /* Render scene to target */
+  renderer.setRenderTarget(sceneTarget);
+  renderer.render(scene, camera);
+
+  /* Render post-processing to screen */
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCamera);
+}
+
+/* ─────────── RESIZE ─────────── */
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  sceneTarget.setSize(w, h);
+  postQuad.material.uniforms.resolution.value.set(w, h);
+}
+
+/* ─────────── HELPER ─────────── */
+function mesh(geometry, material) {
+  return new THREE.Mesh(geometry, material);
+}
+
+/* ─────────── START ─────────── */
+init();
+</script>
 </body>
 </html>
